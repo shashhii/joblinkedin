@@ -1,0 +1,22 @@
+# LinkedIn marathon — Python dependencies (Render + local)
+#
+# After `pip install -r requirements.txt` you MUST install the Chromium
+# browser + system libs (Render's Debian base image):
+#   python -m patchright install --with-deps chromium
+# (see render.yaml buildCommand / DEPLOY.md)
+
+# --- Browser automation (patched Playwright, evades bot detection) ---
+patchright==1.62.1
+
+# --- Web server (Render entry point: /health + supervisor) ---
+flask>=3.0,<4
+
+# --- Cloudflare R2 session sync (S3-compatible) ---
+boto3>=1.35
+
+# --- AI assistant (Gemini / Grok) ---
+google-genai>=2.0
+openai>=1.50
+
+# --- Resume generator (bundled in tools/resume/resume.py) ---
+reportlab>=4.0

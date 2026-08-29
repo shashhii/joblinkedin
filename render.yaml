@@ -1,0 +1,33 @@
+# Render Blueprint — creates the free web service from this repo.
+#
+#   1. Push this repo to GitHub.
+#   2. Render dashboard -> New -> Blueprint -> pick the repo.
+#   3. Render reads this file and creates the service.
+#
+# If you create the service manually instead, use:
+#   Runtime:        Python
+#   Build Command:  pip install -r requirements.txt && python -m patchright install --with-deps chromium
+#   Start Command:  python server.py
+#   Health Check:   /health
+#
+# Required environment variables (set in the service's Environment tab):
+#   GEMINI_API_KEY        your Gemini key (AI question answering + monitor)
+#   DAILY_CAP             applications per day (default 25)
+#   MARATHON_TARGET       total applications (default 100)
+#   R2_ACCOUNT_ID         Cloudflare account id
+#   R2_ACCESS_KEY_ID      R2 API token access key id
+#   R2_SECRET_ACCESS_KEY  R2 API token secret
+#   R2_BUCKET             R2 bucket name
+
+services:
+  - type: web
+    name: linkedin-marathon
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: >
+      pip install -r requirements.txt &&
+      python -m patchright install --with-deps chromium
+    startCommand: python server.py
+    healthCheckPath: /health
+    autoDeploy: true

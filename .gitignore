@@ -1,0 +1,42 @@
+# --- Secrets (NEVER commit) ---
+tools/.ai.env
+tools/.linkedin.env
+.env
+*.env
+!*.env.example
+
+# --- LinkedIn session + runtime state (synced via R2, not git) ---
+tools/.session/
+tools/.applied_jobs.txt
+tools/.tried_jobs.txt
+tools/.daily_count.txt
+tools/.marathon_status.txt
+tools/.marathon_log.txt
+tools/.marathon.lock
+tools/.autopilot_results.txt
+tools/.search_results.txt
+tools/.batch_urls.txt
+tools/.batch_results.txt
+tools/.apply_log.txt
+tools/.apply_status.txt
+tools/.apply_answer.txt
+tools/.apply_debug/
+tools/.linkedin_debug/
+tools/.ai_log.txt
+tools/.ai_resumes/
+tools/.linkedin_login_status.txt
+tools/.server_log.txt
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Stray debug artifacts ---
+out.applyClasses.push({tag
+out.applyEls.push({tag
+
+# --- OS ---
+Thumbs.db
+.DS_Store
