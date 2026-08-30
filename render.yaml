@@ -4,10 +4,14 @@
 #   2. Render dashboard -> New -> Blueprint -> pick the repo.
 #   3. Render reads this file and creates the service.
 #
+# The service uses the Docker runtime: Render builds the Dockerfile at the
+# repo root. The image is based on the official Playwright image, which
+# already contains Chromium + all system libraries, so the build is fast
+# (no apt-get, no browser download).
+#
 # If you create the service manually instead, use:
-#   Runtime:        Python
-#   Build Command:  pip install -r requirements.txt && python -m patchright install --with-deps chromium
-#   Start Command:  python server.py
+#   Runtime:        Docker
+#   (Render auto-detects the Dockerfile at the repo root)
 #   Health Check:   /health
 #
 # Required environment variables (set in the service's Environment tab):
@@ -22,12 +26,8 @@
 services:
   - type: web
     name: linkedin-marathon
-    runtime: python
+    runtime: docker
     plan: free
     region: oregon
-    buildCommand: >
-      pip install -r requirements.txt &&
-      python -m patchright install --with-deps chromium
-    startCommand: python server.py
     healthCheckPath: /health
     autoDeploy: true

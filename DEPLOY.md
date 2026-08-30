@@ -83,10 +83,15 @@ Expected output: `SEED_OK: session + state uploaded to R2. Ready to deploy.`
 
 ## Step 4 — Create the Render service
 
+The service uses the **Docker runtime**: Render builds the `Dockerfile` at the
+repo root. The image is based on the official Playwright image, which already
+contains Chromium + all system libraries, so the build is fast (no `apt-get`,
+no browser download).
+
 1. Render dashboard → **New → Blueprint** → pick your GitHub repo.
    Render reads `render.yaml` and creates the service automatically.
-   (Or **New → Web Service** and fill in manually — values are in
-   `render.yaml`.)
+   (Or **New → Web Service** → Runtime: **Docker** — Render auto-detects the
+   `Dockerfile`.)
 2. In the service's **Environment** tab, add:
 
    | Variable             | Value                                  |
@@ -99,7 +104,8 @@ Expected output: `SEED_OK: session + state uploaded to R2. Ready to deploy.`
    | `R2_SECRET_ACCESS_KEY` | from Step 2                          |
    | `R2_BUCKET`          | `linkedin-marathon`                    |
 
-3. Deploy. First build takes ~5–10 min (it downloads Chromium).
+3. Deploy. Build takes ~2–4 min (just `pip install`; Chromium is pre-baked
+   into the base image).
 4. Open `https://<your-app>.onrender.com/health` — you should see JSON with
    `ok: true` and the applied count.
 
@@ -149,7 +155,7 @@ Test manually: `https://<your-worker>.workers.dev/ping`
 
 | Symptom | Fix |
 |---|---|
-| Render build fails on `patchright install` | Check the build log; the `--with-deps` flag installs Chromium system libs. Retry the deploy. |
+| Render build fails | Check the build log. The Docker build only runs `pip install` (Chromium is pre-baked into the base image), so failures are usually a transient `pip`/network hiccup — just re-deploy. |
 | `/health` says `marathon_pid: null` | Check Render logs; the supervisor restarts the marathon 30 s after a crash. |
 | All jobs `FAILED:session-expired` | Re-run `seed_session.py` (Step 3). |
 | Worker alert `down` repeatedly | Free Render can be slow to cold-start; the Worker waits 90 s. If it persists, check the Render service is actually deployed. |
