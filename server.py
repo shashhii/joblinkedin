@@ -154,6 +154,43 @@ def health():
         return jsonify({"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}), 200
 
 
+@app.get("/diag")
+def diag():
+    """Diagnostic: is R2 configured, and what did the marathon log at startup?
+
+    The marathon's detailed log (R2 restore result, search results, etc.) is
+    written to a file, not Render's console, so this endpoint surfaces it.
+    """
+    try:
+        env_present = {
+            k: bool(os.environ.get(k, "").strip())
+            for k in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID",
+                      "R2_SECRET_ACCESS_KEY", "R2_BUCKET", "GEMINI_API_KEY")
+        }
+        log_head: list[str] = []
+        try:
+            lines = MARATHON_LOG.read_text(encoding="utf-8").splitlines()
+            log_head = lines[:30]
+        except OSError:
+            pass
+        # Surface any R2-related line from the whole log (restore/upload).
+        r2_lines = []
+        try:
+            for ln in MARATHON_LOG.read_text(encoding="utf-8").splitlines():
+                if "R2" in ln or "r2" in ln:
+                    r2_lines.append(ln)
+        except OSError:
+            pass
+        return jsonify({
+            "env_present": env_present,
+            "applied_file_count": _count_applied(),
+            "marathon_log_head": log_head,
+            "r2_lines": r2_lines[-15:],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}), 200
+
+
 @app.get("/")
 def index():
     try:
