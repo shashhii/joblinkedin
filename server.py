@@ -339,6 +339,32 @@ def probe():
                     out["extracted_jobs"] = len(_ls2.extract_jobs(page))
                 except Exception as exc:
                     out["extracted_jobs"] = f"error: {exc.__class__.__name__}: {exc}"
+                # DOM diagnostic: dump the HTML around the first job links so we
+                # can see the REAL card-container structure (LinkedIn changed it,
+                # which is why extract_jobs' selector matches 0 cards).
+                if _request.args.get("dump") == "1":
+                    try:
+                        links = page.locator("a[href*='/jobs/view/']")
+                        n = min(links.count(), 2)
+                        out["dump_count"] = n
+                        out["dump"] = []
+                        for i in range(n):
+                            a = links.nth(i)
+                            # Walk up 3 ancestors and capture each outer HTML.
+                            chain = []
+                            node = a
+                            for _ in range(3):
+                                try:
+                                    node = node.locator("xpath=..")
+                                except Exception:
+                                    break
+                                try:
+                                    chain.append(node.first.inner_html()[:1200])
+                                except Exception:
+                                    chain.append("(could not read)")
+                            out["dump"].append(chain)
+                    except Exception as exc:
+                        out["dump_error"] = f"{exc.__class__.__name__}: {exc}"
                 # Authwall / block indicators.
                 low = (page.url + " " + body).lower()
                 out["looks_like_authwall"] = (
