@@ -239,8 +239,14 @@ def probe():
     import json as _json
     import time as _time
     from pathlib import Path as _Path
+    from flask import request as _request
 
     out = {"ok": False}
+    # A/B test: ?args=full makes /probe use the EXACT BROWSER_ARGS the search
+    # uses (incl. the 192MB V8 heap cap). If probe-with-full-args returns 0
+    # cards while default-args returns ~70, the memory flags are the culprit.
+    use_full_args = _request.args.get("args") == "full"
+    out["args_mode"] = "full" if use_full_args else "default"
     try:
         from patchright.sync_api import sync_playwright
 
@@ -265,16 +271,23 @@ def probe():
             "&start=0"
         )
         with sync_playwright() as pw:
-            ctx = pw.chromium.launch_persistent_context(
-                user_data_dir=str(profile),
-                headless=True,
-                no_viewport=True,
-                args=[
+            if use_full_args:
+                import sys as _sys2
+                _sys2.path.insert(0, str(TOOLS))
+                import linkedin_search as _ls
+                _args = list(_ls.BROWSER_ARGS)
+            else:
+                _args = [
                     "--start-maximized", "--no-sandbox",
                     "--disable-setuid-sandbox", "--disable-dev-shm-usage",
                     "--disable-gpu", "--disable-extensions",
                     "--no-first-run", "--no-default-browser-check",
-                ],
+                ]
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir=str(profile),
+                headless=True,
+                no_viewport=True,
+                args=_args,
             )
             try:
                 # Inject R2-restored cookies (same as linkedin_search.py).
@@ -310,12 +323,22 @@ def probe():
                     body = ""
                 out["body_len"] = len(body)
                 out["body_head"] = body[:1500]
-                # Count job cards.
+                # Count job cards (raw link count, same as before).
                 try:
                     out["job_cards"] = page.locator(
                         "a[href*='/jobs/view/']").count()
                 except Exception:
                     out["job_cards"] = -1
+                # Also run the REAL extraction the search uses, so we can tell
+                # whether 0-jobs is a rendering problem (raw>0, extracted=0)
+                # or a selector problem (raw=0).
+                try:
+                    import sys as _sys3
+                    _sys3.path.insert(0, str(TOOLS))
+                    import linkedin_search as _ls2
+                    out["extracted_jobs"] = len(_ls2.extract_jobs(page))
+                except Exception as exc:
+                    out["extracted_jobs"] = f"error: {exc.__class__.__name__}: {exc}"
                 # Authwall / block indicators.
                 low = (page.url + " " + body).lower()
                 out["looks_like_authwall"] = (
