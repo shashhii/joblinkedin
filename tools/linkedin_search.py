@@ -219,24 +219,44 @@ def main() -> int:
     with sync_playwright() as playwright:
         context, page = _launch()
         try:
-            # LinkedIn throttles bursts from datacenter IPs: a hung page load
-            # can stall for the full timeout. Pace the requests, fail fast on
-            # hung pages, and abort the whole search after a few consecutive
-            # failures so the marathon retries in minutes (not 30).
+            # LinkedIn throttles BURSTS from datacenter IPs. A single page load
+            # works fine (verified via /probe), but firing 100+ page loads in a
+            # row trips the rate limit and every subsequent load hangs, so the
+            # search returns 0 jobs. To stay under the limit we:
+            #   - cap the total number of page loads per search (max_pages),
+            #   - stop early once we have enough unique jobs (target_jobs),
+            #   - treat consecutive EMPTY pages as a throttle signal and abort,
+            #   - pace requests human-like (4-8s) with a longer pause between
+            #     different keyword searches.
             #
             # Memory: Render's free tier is 512MB shared with Flask + the
             # marathon. LinkedIn's heavy JS pages accumulate memory in the
             # browser, so we recycle (restart) the browser every few page
             # loads to keep the footprint flat.
-            consecutive_failures = 0
-            max_consecutive_failures = 4
+            consecutive_failures = 0   # hard failures (exceptions / hung loads)
+            consecutive_empty = 0      # pages that loaded but returned 0 jobs
+            max_consecutive_failures = 3
+            max_consecutive_empty = 4
+            max_pages = 12             # hard cap on page loads per search
+            target_jobs = 120          # stop once we have this many unique jobs
             pages_loaded = 0
             recycle_every = 6
             for keywords, location in SEARCHES:
+                if pages_loaded >= max_pages:
+                    print(f"[search] reached {max_pages}-page cap — stopping", flush=True)
+                    break
+                if len(all_jobs) >= target_jobs:
+                    print(f"[search] have {len(all_jobs)} jobs (target {target_jobs}) — stopping", flush=True)
+                    break
                 if consecutive_failures >= max_consecutive_failures:
                     print(f"[search] {consecutive_failures} consecutive failures — aborting search early", flush=True)
                     break
+                if consecutive_empty >= max_consecutive_empty:
+                    print(f"[search] {consecutive_empty} empty pages in a row (likely throttled) — aborting", flush=True)
+                    break
                 for start in PAGE_STARTS:
+                    if pages_loaded >= max_pages or len(all_jobs) >= target_jobs:
+                        break
                     url = (
                         "https://www.linkedin.com/jobs/search/?"
                         f"keywords={keywords.replace(' ', '+')}"
@@ -255,13 +275,16 @@ def main() -> int:
                         consecutive_failures = 0
                         pages_loaded += 1
                         if not jobs:
+                            consecutive_empty += 1
+                            print(f"[search] '{keywords}' @ {location} start={start}: 0 cards (empty {consecutive_empty} in a row)", flush=True)
                             break  # no more pages for this search
+                        consecutive_empty = 0
                         added = 0
                         for j in jobs:
                             if j["id"] not in all_jobs:
                                 all_jobs[j["id"]] = j
                                 added += 1
-                        print(f"[search] '{keywords}' @ {location} start={start}: {len(jobs)} cards (+{added} new)", flush=True)
+                        print(f"[search] '{keywords}' @ {location} start={start}: {len(jobs)} cards (+{added} new, total {len(all_jobs)})", flush=True)
                         if len(jobs) < 10:
                             break  # last page
                     except Exception as exc:
@@ -269,8 +292,8 @@ def main() -> int:
                         print(f"[search] '{keywords}' @ {location} start={start} FAILED ({consecutive_failures} in a row): {exc}", flush=True)
                         if consecutive_failures >= max_consecutive_failures:
                             break
-                    # Human-like pacing: 3-6s between page loads (was 1.5s).
-                    time.sleep(random.uniform(3.0, 6.0))
+                    # Human-like pacing: 4-8s between page loads.
+                    time.sleep(random.uniform(4.0, 8.0))
                     # Recycle the browser to cap memory growth.
                     if pages_loaded and pages_loaded % recycle_every == 0:
                         try:
@@ -280,6 +303,8 @@ def main() -> int:
                         time.sleep(2)
                         context, page = _launch()
                         print(f"[search] recycled browser after {pages_loaded} pages", flush=True)
+                # Longer pause between different keyword searches.
+                time.sleep(random.uniform(8.0, 14.0))
         finally:
             try:
                 context.close()
