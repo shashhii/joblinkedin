@@ -33,6 +33,43 @@ STATUS_FILE = TOOLS / ".marathon_status.txt"
 MARATHON_LOG = TOOLS / ".marathon_log.txt"
 APPLIED_FILE = TOOLS / ".applied_jobs.txt"
 
+
+# ---------------------------------------------------------------------------
+# Browser path fix (Render)
+#
+# The Docker image is based on mcr.microsoft.com/playwright/python, which
+# ships Chromium at /ms-playwright and sets PLAYWRIGHT_BROWSERS_PATH to match.
+# Render's Docker runtime does NOT preserve that image ENV var at runtime, so
+# patchright falls back to the default ~/.cache/ms-playwright (empty) and
+# every browser launch fails with "Executable doesn't exist" — which is why
+# the marathon saw "0 jobs in list".
+#
+# Detect the real browser directory and force the env var here, BEFORE the
+# marathon subprocess is spawned (it inherits this environment).
+# ---------------------------------------------------------------------------
+def _fix_browser_path() -> str:
+    candidates = [
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip(),
+        "/ms-playwright",
+        str(Path.home() / ".cache" / "ms-playwright"),
+        str(Path.home() / ".local" / "share" / "ms-playwright"),
+    ]
+    for cand in candidates:
+        if not cand:
+            continue
+        p = Path(cand)
+        if p.is_dir() and any(
+            d.name.startswith(("chromium-1234", "chromium_headless_shell-1234"))
+            for d in p.iterdir()
+        ):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(p)
+            return str(p)
+    # Nothing found — keep whatever was there (the probe will report it).
+    return os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "(none)")
+
+
+BROWSER_PATH = _fix_browser_path()
+
 app = Flask(__name__)
 
 START_TIME = time.time()
@@ -206,6 +243,15 @@ def probe():
     out = {"ok": False}
     try:
         from patchright.sync_api import sync_playwright
+
+        # Browser-path diagnostics (the "0 jobs" root cause was the browser
+        # not being found at the default path).
+        out["browser_path_env"] = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "(unset)")
+        out["browser_path_detected"] = BROWSER_PATH
+        _bp = _Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""))
+        out["browser_dir_contents"] = (
+            sorted(p.name for p in _bp.iterdir()) if _bp.is_dir() else "(dir missing)"
+        )
 
         profile = _Path.home() / ".linkedin-mcp" / "profile"
         url = (

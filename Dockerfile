@@ -42,6 +42,11 @@ RUN if [ -d /ms-playwright/chromium-1234 ]; then \
         python -m patchright install chromium; \
     fi
 
+# Render's Docker runtime does not preserve the base image's ENV vars at
+# runtime, so re-declare the browser path explicitly. server.py also detects
+# and forces this at startup (belt and suspenders).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Render sets PORT automatically; 10000 is the documented default.
 EXPOSE 10000
 
