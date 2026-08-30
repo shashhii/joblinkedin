@@ -3,7 +3,9 @@
   "name": "linkedin-keepalive",
   "main": "src/index.js",
   "compatibility_date": "2025-06-01",
-  "crons": ["*/5 * * * *"],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "vars": {
     "RENDER_URL": "https://joblinkedin.onrender.com"
   }

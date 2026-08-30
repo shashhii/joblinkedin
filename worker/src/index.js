@@ -1,7 +1,8 @@
 /**
  * linkedin-keepalive — Cloudflare Worker
  *
- * Every 5 minutes (cron) this worker:
+ * Every 5 minutes (cron, configured in wrangler.jsonc under triggers.crons)
+ * this worker:
  *   1. Pings the Render service's /health endpoint. The inbound HTTP request
  *      keeps the free Render instance awake (prevents the 15-min spin-down).
  *   2. Checks the JSON for problems (service down, session expired) and fires
@@ -12,24 +13,39 @@
  *   RENDER_URL      https://your-app.onrender.com
  *   ALERT_WEBHOOK   (optional) Discord/Slack webhook URL for alerts
  *
- * Deploy:
- *   cd worker
- *   npm install
- *   npx wrangler deploy
+ * Deploy: via Cloudflare Workers & Pages GitHub integration (auto on push),
+ * or locally: cd worker && npm install && npx wrangler deploy
  */
 
 const STATE_TTL_SECONDS = 10 * 60; // remember last state for 10 min
+// The Workers Cache API requires ABSOLUTE URL keys (bare strings throw).
+const STATE_KEY = "https://linkedin-keepalive.internal/state";
 
 export default {
   async scheduled(event, env, ctx) {
-    await check(env, ctx);
+    try {
+      await check(env, ctx);
+    } catch (e) {
+      // Never let a cron run die unhandled — log and move on.
+      console.error("scheduled check failed:", e && e.message ? e.message : e);
+    }
   },
 
   // Manual trigger: GET https://<worker>/ping
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/ping") {
-      const result = await check(env);
+      let result;
+      try {
+        result = await check(env);
+      } catch (e) {
+        // Report the real error as JSON instead of a bare 500.
+        result = {
+          time: new Date().toISOString(),
+          ok: false,
+          detail: `worker error: ${e && e.message ? e.message : e}`,
+        };
+      }
       return new Response(JSON.stringify(result, null, 2), {
         headers: { "content-type": "application/json" },
       });
@@ -81,26 +97,33 @@ async function check(env, ctx) {
     problem = "session-expired";
   }
 
-  // Alert only on state change (avoids spam every 5 min).
-  const cache = await caches.open("keepalive-state");
-  const prev = (await cache.match("state"))
-    ? (await cache.match("state")).text()
-    : null;
-  if (problem && problem !== prev) {
-    result.alert_sent = await sendAlert(env, problem, result);
-  } else if (!problem && prev && prev !== "healthy") {
-    result.alert_sent = await sendAlert(env, "recovered", result);
+  // State cache + alerts. Wrapped so a cache/alert failure can never break
+  // the keep-alive ping itself.
+  try {
+    const cache = await caches.open("keepalive-state");
+    const prev = (await cache.match(STATE_KEY))
+      ? (await cache.match(STATE_KEY)).text()
+      : null;
+    if (problem && problem !== prev) {
+      result.alert_sent = await sendAlert(env, problem, result);
+    } else if (!problem && prev && prev !== "healthy") {
+      result.alert_sent = await sendAlert(env, "recovered", result);
+    }
+    if (ctx && ctx.waitUntil) {
+      ctx.waitUntil(
+        cache.put(
+          STATE_KEY,
+          new Response(problem || "healthy", {
+            headers: { "cache-control": `max-age=${STATE_TTL_SECONDS}` },
+          })
+        )
+      );
+    }
+  } catch (e) {
+    result.detail = (result.detail ? result.detail + " | " : "") +
+      `state-cache: ${e.message || e}`;
   }
-  if (ctx && ctx.waitUntil) {
-    ctx.waitUntil(
-      cache.put(
-        "state",
-        new Response(problem || "healthy", {
-          headers: { "cache-control": `max-age=${STATE_TTL_SECONDS}` },
-        })
-      )
-    );
-  }
+
   return result;
 }
 
