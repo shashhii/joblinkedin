@@ -353,6 +353,7 @@ def fresh_search(headed: bool) -> bool:
     cmd = [sys.executable, str(SEARCH_SCRIPT), "--fresh"]
     if headed:
         cmd.append("--headed")
+    timed_out = False
     try:
         # start_new_session=True puts the search in its own process group so
         # we can kill the WHOLE tree (Python + Chromium) on timeout. Without
@@ -372,14 +373,19 @@ def fresh_search(headed: bool) -> bool:
                 proc.kill()
             proc.wait()
             log("search timed out (killed process tree)")
-            return False
+            timed_out = True
     except Exception as exc:
         log(f"search failed: {exc}")
         return False
+    # Count jobs even on timeout: the search saves results incrementally
+    # after each page, so a partial/throttled search still yields usable jobs.
     n = 0
     if RESULTS_FILE.exists():
         n = len([x for x in RESULTS_FILE.read_text(encoding="utf-8").splitlines() if x])
-    log(f"fresh search done: {n} jobs in list")
+    if timed_out:
+        log(f"search timed out but {n} jobs were saved incrementally")
+    else:
+        log(f"fresh search done: {n} jobs in list")
     return n > 0
 
 
