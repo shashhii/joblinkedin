@@ -41,6 +41,22 @@ BROWSER_ARGS = [
     "--disable-extensions",
     "--no-first-run",
     "--no-default-browser-check",
+    # --- Memory savers (Render free tier = 512MB, shared with Flask + marathon) ---
+    # Cap the V8 heap per renderer; this is the single biggest lever.
+    "--js-flags=--max-old-space-size=192",
+    # Disable heavy/unnecessary features that allocate memory.
+    "--disable-features=Translate,OptimizationHints,InterestFeedContentSuggestions,"
+    "PrivacySandboxSettings4,ThirdPartyStoragePartitioning,VizDisplayCompositor,"
+    "PaintHolding,MediaRouter,AudioService",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--mute-audio",
+    "--disable-logging",
+    "--disable-breakpad",
+    "--disable-crash-reporter",
+    "--disable-hang-monitor",
+    "--disable-notifications",
+    "--disable-sync",
 ]
 
 
@@ -187,22 +203,35 @@ def main() -> int:
             pass
 
     all_jobs: dict[str, dict] = {}
-    with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
+    headless = "--headed" not in sys.argv
+
+    def _launch():
+        ctx = playwright.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
-            headless="--headed" not in sys.argv,
+            headless=headless,
             no_viewport=True,
             args=BROWSER_ARGS,
         )
-        _inject_session(context)
-        page = context.pages[0] if context.pages else context.new_page()
+        _inject_session(ctx)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        return ctx, pg
+
+    with sync_playwright() as playwright:
+        context, page = _launch()
         try:
             # LinkedIn throttles bursts from datacenter IPs: a hung page load
             # can stall for the full timeout. Pace the requests, fail fast on
             # hung pages, and abort the whole search after a few consecutive
             # failures so the marathon retries in minutes (not 30).
+            #
+            # Memory: Render's free tier is 512MB shared with Flask + the
+            # marathon. LinkedIn's heavy JS pages accumulate memory in the
+            # browser, so we recycle (restart) the browser every few page
+            # loads to keep the footprint flat.
             consecutive_failures = 0
             max_consecutive_failures = 4
+            pages_loaded = 0
+            recycle_every = 6
             for keywords, location in SEARCHES:
                 if consecutive_failures >= max_consecutive_failures:
                     print(f"[search] {consecutive_failures} consecutive failures — aborting search early", flush=True)
@@ -224,6 +253,7 @@ def main() -> int:
                         scroll_to_load(page)
                         jobs = extract_jobs(page)
                         consecutive_failures = 0
+                        pages_loaded += 1
                         if not jobs:
                             break  # no more pages for this search
                         added = 0
@@ -241,8 +271,20 @@ def main() -> int:
                             break
                     # Human-like pacing: 3-6s between page loads (was 1.5s).
                     time.sleep(random.uniform(3.0, 6.0))
+                    # Recycle the browser to cap memory growth.
+                    if pages_loaded and pages_loaded % recycle_every == 0:
+                        try:
+                            context.close()
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        context, page = _launch()
+                        print(f"[search] recycled browser after {pages_loaded} pages", flush=True)
         finally:
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                pass
 
     lines = []
     for j in all_jobs.values():

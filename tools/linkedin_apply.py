@@ -62,6 +62,22 @@ BROWSER_ARGS = [
     "--disable-extensions",
     "--no-first-run",
     "--no-default-browser-check",
+    # --- Memory savers (Render free tier = 512MB, shared with Flask + marathon) ---
+    # Cap the V8 heap per renderer; this is the single biggest lever.
+    "--js-flags=--max-old-space-size=192",
+    # Disable heavy/unnecessary features that allocate memory.
+    "--disable-features=Translate,OptimizationHints,InterestFeedContentSuggestions,"
+    "PrivacySandboxSettings4,ThirdPartyStoragePartitioning,VizDisplayCompositor,"
+    "PaintHolding,MediaRouter,AudioService",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--mute-audio",
+    "--disable-logging",
+    "--disable-breakpad",
+    "--disable-crash-reporter",
+    "--disable-hang-monitor",
+    "--disable-notifications",
+    "--disable-sync",
 ]
 
 
