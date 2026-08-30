@@ -17,6 +17,7 @@ Writes tools/.search_results.txt with one job per line:
 
 from __future__ import annotations
 
+import random
 import re
 import sys
 import time
@@ -196,7 +197,16 @@ def main() -> int:
         _inject_session(context)
         page = context.pages[0] if context.pages else context.new_page()
         try:
+            # LinkedIn throttles bursts from datacenter IPs: a hung page load
+            # can stall for the full timeout. Pace the requests, fail fast on
+            # hung pages, and abort the whole search after a few consecutive
+            # failures so the marathon retries in minutes (not 30).
+            consecutive_failures = 0
+            max_consecutive_failures = 4
             for keywords, location in SEARCHES:
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"[search] {consecutive_failures} consecutive failures — aborting search early", flush=True)
+                    break
                 for start in PAGE_STARTS:
                     url = (
                         "https://www.linkedin.com/jobs/search/?"
@@ -209,10 +219,11 @@ def main() -> int:
                         f"&start={start}"
                     )
                     try:
-                        page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                         time.sleep(4)
                         scroll_to_load(page)
                         jobs = extract_jobs(page)
+                        consecutive_failures = 0
                         if not jobs:
                             break  # no more pages for this search
                         added = 0
@@ -224,8 +235,12 @@ def main() -> int:
                         if len(jobs) < 10:
                             break  # last page
                     except Exception as exc:
-                        print(f"[search] '{keywords}' @ {location} start={start} FAILED: {exc}", flush=True)
-                    time.sleep(1.5)
+                        consecutive_failures += 1
+                        print(f"[search] '{keywords}' @ {location} start={start} FAILED ({consecutive_failures} in a row): {exc}", flush=True)
+                        if consecutive_failures >= max_consecutive_failures:
+                            break
+                    # Human-like pacing: 3-6s between page loads (was 1.5s).
+                    time.sleep(random.uniform(3.0, 6.0))
         finally:
             context.close()
 
