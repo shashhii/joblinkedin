@@ -334,6 +334,82 @@ def probe():
         return jsonify(out), 200
 
 
+@app.get("/browser")
+def browser_diag():
+    """Filesystem diagnostic: where is the Chromium binary actually on Render?
+
+    Lists candidate browser dirs, searches common roots for the executable,
+    and reports the patchright version + driver location.
+    """
+    import shutil
+
+    out: dict = {
+        "home": str(Path.home()),
+        "cwd": str(Path.cwd()),
+        "env_browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "(unset)"),
+        "detected": BROWSER_PATH,
+        "dirs": {},
+        "found_executables": [],
+        "which_chromium": (
+            shutil.which("chromium")
+            or shutil.which("chromium-browser")
+            or shutil.which("google-chrome")
+            or "(none)"
+        ),
+    }
+
+    candidates = [
+        "/ms-playwright",
+        str(Path.home() / ".cache" / "ms-playwright"),
+        str(Path.home() / ".local" / "share" / "ms-playwright"),
+        "/opt/render/.cache/ms-playwright",
+        "/root/.cache/ms-playwright",
+        "/app/.cache/ms-playwright",
+    ]
+    for cand in candidates:
+        p = Path(cand)
+        if p.is_dir():
+            try:
+                out["dirs"][cand] = sorted(x.name for x in p.iterdir())
+            except OSError as exc:
+                out["dirs"][cand] = f"(read error: {exc})"
+        else:
+            out["dirs"][cand] = "(missing)"
+
+    # Search a few roots for the headless-shell / chromium executable.
+    search_roots = ["/ms-playwright", str(Path.home()), "/opt/render", "/app", "/root"]
+    for root in search_roots:
+        rp = Path(root)
+        if not rp.is_dir():
+            continue
+        try:
+            for f in rp.rglob("*"):
+                if f.is_file() and f.name in (
+                    "chrome-headless-shell", "chrome", "headless_shell",
+                ):
+                    out["found_executables"].append(str(f))
+                    if len(out["found_executables"]) >= 20:
+                        break
+        except OSError:
+            continue
+        if len(out["found_executables"]) >= 20:
+            break
+
+    # patchright version + driver location.
+    try:
+        import patchright
+        out["patchright_version"] = getattr(patchright, "__version__", "(unknown)")
+    except Exception as exc:  # noqa: BLE001
+        out["patchright_version"] = f"(import error: {exc})"
+    try:
+        import patchright.driver as _drv
+        out["driver_dir"] = str(Path(_drv.__file__).resolve().parent)
+    except Exception as exc:  # noqa: BLE001
+        out["driver_dir"] = f"(error: {exc})"
+
+    return jsonify(out)
+
+
 @app.get("/")
 def index():
     try:
