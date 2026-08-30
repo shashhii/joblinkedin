@@ -191,6 +191,103 @@ def diag():
         return jsonify({"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}), 200
 
 
+@app.get("/probe")
+def probe():
+    """Open the LinkedIn search page (same way the marathon does) and report
+    what LinkedIn actually shows: final URL, title, body text, card count.
+
+    Used to diagnose '0 jobs in list' — distinguishes a genuine empty result
+    from an authwall / CAPTCHA / 'unusual activity' block.
+    """
+    import json as _json
+    import time as _time
+    from pathlib import Path as _Path
+
+    out = {"ok": False}
+    try:
+        from patchright.sync_api import sync_playwright
+
+        profile = _Path.home() / ".linkedin-mcp" / "profile"
+        url = (
+            "https://www.linkedin.com/jobs/search/?"
+            "keywords=software+engineer"
+            "&location=Bengaluru"
+            "&f_E=1%2C2%2C3"
+            "&f_AL=true"
+            "&f_TPR=r604800"
+            "&sortBy=DD"
+            "&start=0"
+        )
+        with sync_playwright() as pw:
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir=str(profile),
+                headless=True,
+                no_viewport=True,
+                args=[
+                    "--start-maximized", "--no-sandbox",
+                    "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                    "--disable-gpu", "--disable-extensions",
+                    "--no-first-run", "--no-default-browser-check",
+                ],
+            )
+            try:
+                # Inject R2-restored cookies (same as linkedin_search.py).
+                try:
+                    import sys as _sys
+                    _sys.path.insert(0, str(TOOLS))
+                    import r2_sync
+                    cookies = r2_sync.load_cookies()
+                    if cookies:
+                        ctx.add_cookies(cookies)
+                        out["cookies_injected"] = len(cookies)
+                    else:
+                        out["cookies_injected"] = 0
+                except Exception as exc:
+                    out["cookie_inject_error"] = f"{exc.__class__.__name__}: {exc}"
+
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                _time.sleep(5)
+                # Scroll a bit like the real search does.
+                for _ in range(3):
+                    try:
+                        page.mouse.wheel(0, 3000)
+                    except Exception:
+                        break
+                    _time.sleep(1.0)
+
+                out["final_url"] = page.url
+                out["title"] = page.title()
+                try:
+                    body = page.inner_text("body")
+                except Exception:
+                    body = ""
+                out["body_len"] = len(body)
+                out["body_head"] = body[:1500]
+                # Count job cards.
+                try:
+                    out["job_cards"] = page.locator(
+                        "a[href*='/jobs/view/']").count()
+                except Exception:
+                    out["job_cards"] = -1
+                # Authwall / block indicators.
+                low = (page.url + " " + body).lower()
+                out["looks_like_authwall"] = (
+                    "authwall" in page.url or "/login" in page.url
+                    or "sign in" in low or "log in" in low
+                    or "unusual activity" in low
+                    or "captcha" in low or "puzzle" in low
+                    or "verify you are human" in low
+                )
+            finally:
+                ctx.close()
+        out["ok"] = True
+        return jsonify(out)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = f"{exc.__class__.__name__}: {exc}"
+        return jsonify(out), 200
+
+
 @app.get("/")
 def index():
     try:
