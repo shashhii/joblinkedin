@@ -43,7 +43,7 @@ BROWSER_ARGS = [
     "--no-default-browser-check",
     # --- Memory savers (Render free tier = 512MB, shared with Flask + marathon) ---
     # Cap the V8 heap per renderer; this is the single biggest lever.
-    "--js-flags=--max-old-space-size=192",
+    "--js-flags=--max-old-space-size=128",
     # Disable heavy/unnecessary features that allocate memory.
     "--disable-features=Translate,OptimizationHints,InterestFeedContentSuggestions,"
     "PrivacySandboxSettings4,ThirdPartyStoragePartitioning,VizDisplayCompositor,"
@@ -241,6 +241,24 @@ def scroll_to_load(page, rounds: int = 6) -> None:
         time.sleep(1.0)
 
 
+def _save_results(all_jobs: dict[str, dict]) -> None:
+    """Write the current results to RESULTS_FILE (incremental save).
+
+    Called after each successful page so a partial/throttled search that
+    gets killed (OOM, timeout) still produces usable jobs.
+    """
+    try:
+        lines = []
+        for j in all_jobs.values():
+            lines.append(
+                f"{j['id']} | {j['title']} | {j['company']} | {j['location']} | "
+                f"{'EASY' if j['easy'] else 'EXTERNAL'} | {j['url']}"
+            )
+        RESULTS_FILE.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main() -> int:
     fresh = "--fresh" in sys.argv
     if fresh:
@@ -285,7 +303,7 @@ def main() -> int:
             consecutive_empty = 0      # pages that loaded but returned 0 jobs
             max_consecutive_failures = 3
             max_consecutive_empty = 4
-            max_pages = 12             # hard cap on page loads per search
+            max_pages = 8              # hard cap on page loads per search
             target_jobs = 120          # stop once we have this many unique jobs
             pages_loaded = 0
             recycle_every = 6
@@ -317,8 +335,8 @@ def main() -> int:
                     )
                     try:
                         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                        time.sleep(4)
-                        scroll_to_load(page)
+                        time.sleep(3)
+                        scroll_to_load(page, rounds=3)
                         jobs = extract_jobs(page)
                         consecutive_failures = 0
                         pages_loaded += 1
@@ -333,6 +351,9 @@ def main() -> int:
                                 all_jobs[j["id"]] = j
                                 added += 1
                         print(f"[search] '{keywords}' @ {location} start={start}: {len(jobs)} cards (+{added} new, total {len(all_jobs)})", flush=True)
+                        # Incremental save: persist results now so a partial
+                        # search (killed by OOM/timeout) still yields jobs.
+                        _save_results(all_jobs)
                         if len(jobs) < 10:
                             break  # last page
                     except Exception as exc:
@@ -340,8 +361,8 @@ def main() -> int:
                         print(f"[search] '{keywords}' @ {location} start={start} FAILED ({consecutive_failures} in a row): {exc}", flush=True)
                         if consecutive_failures >= max_consecutive_failures:
                             break
-                    # Human-like pacing: 4-8s between page loads.
-                    time.sleep(random.uniform(4.0, 8.0))
+                    # Human-like pacing: 3-6s between page loads.
+                    time.sleep(random.uniform(3.0, 6.0))
                     # Recycle the browser to cap memory growth.
                     if pages_loaded and pages_loaded % recycle_every == 0:
                         try:

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import random
+import signal
 import subprocess
 import sys
 import time
@@ -353,10 +354,27 @@ def fresh_search(headed: bool) -> bool:
     if headed:
         cmd.append("--headed")
     try:
-        subprocess.run(cmd, cwd=str(HERE.parent), timeout=1800,
-                       capture_output=True, text=True)
-    except subprocess.TimeoutExpired:
-        log("search timed out")
+        # start_new_session=True puts the search in its own process group so
+        # we can kill the WHOLE tree (Python + Chromium) on timeout. Without
+        # this, a timed-out search leaves orphaned Chromium running, which
+        # leaks memory and OOM-kills the Render service (512MB limit).
+        proc = subprocess.Popen(
+            cmd, cwd=str(HERE.parent),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=True,
+        )
+        try:
+            proc.communicate(timeout=1800)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError, AttributeError):
+                proc.kill()
+            proc.wait()
+            log("search timed out (killed process tree)")
+            return False
+    except Exception as exc:
+        log(f"search failed: {exc}")
         return False
     n = 0
     if RESULTS_FILE.exists():
