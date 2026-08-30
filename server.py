@@ -336,7 +336,10 @@ def probe():
                     import sys as _sys3
                     _sys3.path.insert(0, str(TOOLS))
                     import linkedin_search as _ls2
-                    out["extracted_jobs"] = len(_ls2.extract_jobs(page))
+                    _extracted = _ls2.extract_jobs(page)
+                    out["extracted_jobs"] = len(_extracted)
+                    if _extracted:
+                        out["first_job"] = _extracted[0]
                 except Exception as exc:
                     out["extracted_jobs"] = f"error: {exc.__class__.__name__}: {exc}"
                 # DOM diagnostic: dump the HTML around the first job links so we

@@ -121,42 +121,84 @@ SEARCHES = [
 PAGE_STARTS = [0, 25, 50]
 
 
+def _job_id_from_href(href: str) -> str | None:
+    """Extract the numeric job ID from a LinkedIn job URL.
+
+    Current DOM uses slug URLs:  /jobs/view/<slug>-<id>?...
+    Older DOM used numeric URLs: /jobs/view/<id>/
+    """
+    m = re.search(r"/jobs/view/(\d+)", href)
+    if m:
+        return m.group(1)
+    path = href.split("?", 1)[0]
+    m2 = re.search(r"(\d+)$", path)
+    return m2.group(1) if m2 else None
+
+
 def extract_jobs(page) -> list[dict]:
-    """Extract job cards from the current search results page."""
+    """Extract job cards from the current search results page.
+
+    LinkedIn's DOM changes over time. The current (2026) card container is
+    ``div.job-search-card`` and the job link is a slug URL. The older
+    selectors are kept as fallbacks so a future DOM change degrades
+    gracefully instead of silently returning 0 jobs.
+    """
     jobs = []
-    cards = page.locator("li.jobs-search-results__list-item, div.job-card-container").all()
+    cards = page.locator(
+        "div.job-search-card, div.job-card-container, li.jobs-search-results__list-item"
+    ).all()
     for card in cards:
         try:
             link = card.locator("a[href*='/jobs/view/']").first
             href = link.get_attribute("href") or ""
-            m = re.search(r"/jobs/view/(\d+)", href)
-            if not m:
+            job_id = _job_id_from_href(href)
+            if not job_id:
                 continue
-            job_id = m.group(1)
             title = ""
-            try:
-                title = card.locator(
-                    ".job-card-list__title--link strong, .job-card-container__link strong, .job-card-list__title--link"
-                ).first.inner_text().strip()
-            except Exception:
+            for sel in (
+                "h3.base-search-card__title",
+                ".job-card-list__title--link strong",
+                ".job-card-container__link strong",
+                ".job-card-list__title--link",
+            ):
+                try:
+                    t = card.locator(sel).first.inner_text().strip()
+                    if t:
+                        title = t
+                        break
+                except Exception:
+                    pass
+            if not title:
                 try:
                     title = link.inner_text().strip()
                 except Exception:
                     pass
             company = ""
-            try:
-                company = card.locator(
-                    ".job-card-container__primary-description, .artdeco-entity-lockup__subtitle"
-                ).first.inner_text().strip()
-            except Exception:
-                pass
+            for sel in (
+                ".base-search-card__subtitle",
+                ".job-card-container__primary-description",
+                ".artdeco-entity-lockup__subtitle",
+            ):
+                try:
+                    c = card.locator(sel).first.inner_text().strip()
+                    if c:
+                        company = c
+                        break
+                except Exception:
+                    pass
             location = ""
-            try:
-                location = card.locator(
-                    ".job-card-container__metadata-item, .artdeco-entity-lockup__caption"
-                ).first.inner_text().strip()
-            except Exception:
-                pass
+            for sel in (
+                ".job-search-card__location",
+                ".job-card-container__metadata-item",
+                ".artdeco-entity-lockup__caption",
+            ):
+                try:
+                    loc = card.locator(sel).first.inner_text().strip()
+                    if loc:
+                        location = loc
+                        break
+                except Exception:
+                    pass
             easy = False
             try:
                 badge = card.locator(
@@ -168,6 +210,12 @@ def extract_jobs(page) -> list[dict]:
                 try:
                     btn = card.locator("button[aria-label*='Easy Apply'], a[aria-label*='Easy Apply']").first
                     easy = btn.count() > 0
+                except Exception:
+                    pass
+            if not easy:
+                # Fallback: scan the whole card for an Easy Apply badge.
+                try:
+                    easy = "easy apply" in card.inner_text().lower()
                 except Exception:
                     pass
             jobs.append({
