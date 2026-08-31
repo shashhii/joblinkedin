@@ -25,9 +25,15 @@ WORKDIR /app
 # Install Python dependencies first (cached layer — only re-runs when
 # requirements.txt changes).
 COPY requirements.txt .
-# --timeout/--retries make the install resilient to the flaky free-tier build
-# network (a hung pip download was stalling builds for 40+ min).
-RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
+# The free-tier build network is flaky (pip "Could not fetch URL" /
+# ReadTimeoutError). Retry the WHOLE install up to 3 times, each attempt with a
+# long per-connection timeout and many per-URL retries. If all 3 attempts fail
+# the build fails (correct); if any one succeeds the build continues.
+RUN pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt \
+    || { echo "==> pip attempt 1 failed, retrying in 10s..."; sleep 10; \
+         pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt; } \
+    || { echo "==> pip attempt 2 failed, retrying in 10s..."; sleep 10; \
+         pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt; }
 
 # Copy the application (server.py + tools/).
 COPY server.py .
