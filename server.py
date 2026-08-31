@@ -283,11 +283,24 @@ def probe():
                     "--disable-gpu", "--disable-extensions",
                     "--no-first-run", "--no-default-browser-check",
                 ]
+            _proxy = {}
+            _purl = os.environ.get("PROXY_URL", "").strip()
+            if _purl:
+                _server = _purl.replace("http://", "").replace("https://", "")
+                _proxy = {"proxy": {"server": f"http://{_server}"}}
+                if "@" in _server:
+                    _auth, _h = _server.split("@", 1)
+                    if ":" in _auth:
+                        _u, _p = _auth.split(":", 1)
+                        _proxy["proxy"]["username"] = _u
+                        _proxy["proxy"]["password"] = _p
+            out["proxy"] = "on" if _proxy else "off"
             ctx = pw.chromium.launch_persistent_context(
                 user_data_dir=str(profile),
                 headless=True,
                 no_viewport=True,
                 args=_args,
+                **_proxy,
             )
             try:
                 # Inject R2-restored cookies (same as linkedin_search.py).

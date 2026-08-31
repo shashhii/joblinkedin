@@ -17,6 +17,7 @@ Writes tools/.search_results.txt with one job per line:
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import sys
@@ -271,12 +272,33 @@ def main() -> int:
     all_jobs: dict[str, dict] = {}
     headless = "--headed" not in sys.argv
 
+    def _proxy_kwargs() -> dict:
+        """Residential proxy from env (LinkedIn blocks datacenter IPs).
+
+        Set PROXY_URL (e.g. http://user:pass@host:port) on Render to route
+        the browser through a residential IP. Empty -> no proxy.
+        """
+        url = os.environ.get("PROXY_URL", "").strip()
+        if not url:
+            return {}
+        server = url.replace("http://", "").replace("https://", "")
+        pw: dict = {"server": f"http://{server}"}
+        if "@" in server:
+            auth, host = server.split("@", 1)
+            if ":" in auth:
+                user, pwd = auth.split(":", 1)
+                pw["username"] = user
+                pw["password"] = pwd
+        print(f"[search] using proxy: {pw['server']}", flush=True)
+        return {"proxy": pw}
+
     def _launch():
         ctx = playwright.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
             headless=headless,
             no_viewport=True,
             args=BROWSER_ARGS,
+            **_proxy_kwargs(),
         )
         _inject_session(ctx)
         pg = ctx.pages[0] if ctx.pages else ctx.new_page()

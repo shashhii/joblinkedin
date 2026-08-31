@@ -27,6 +27,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import random
 import sys
 import time
@@ -41,6 +42,26 @@ try:
     import ai_assist
 except Exception:
     ai_assist = None
+
+
+def _proxy_kwargs() -> dict:
+    """Residential proxy from env (LinkedIn blocks datacenter IPs).
+
+    Set PROXY_URL (e.g. http://user:pass@host:port) on Render to route the
+    browser through a residential IP. Empty -> no proxy.
+    """
+    url = os.environ.get("PROXY_URL", "").strip()
+    if not url:
+        return {}
+    server = url.replace("http://", "").replace("https://", "")
+    pw: dict = {"server": f"http://{server}"}
+    if "@" in server:
+        auth, _host = server.split("@", 1)
+        if ":" in auth:
+            user, pwd = auth.split(":", 1)
+            pw["username"] = user
+            pw["password"] = pwd
+    return {"proxy": pw}
 
 HERE = Path(__file__).resolve().parent
 STATUS_FILE = HERE / ".apply_status.txt"
@@ -800,6 +821,7 @@ def main() -> int:
                 headless=headless,
                 no_viewport=True,
                 args=BROWSER_ARGS,
+                **_proxy_kwargs(),
             )
             _inject_session(context)
             page = context.pages[0] if context.pages else context.new_page()
@@ -873,6 +895,7 @@ def main() -> int:
             headless=headless,
             no_viewport=True,
             args=BROWSER_ARGS,
+            **_proxy_kwargs(),
         )
         _inject_session(context)
         page = context.pages[0] if context.pages else context.new_page()
