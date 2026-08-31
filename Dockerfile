@@ -25,7 +25,9 @@ WORKDIR /app
 # Install Python dependencies first (cached layer — only re-runs when
 # requirements.txt changes).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --timeout/--retries make the install resilient to the flaky free-tier build
+# network (a hung pip download was stalling builds for 40+ min).
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
 
 # Copy the application (server.py + tools/).
 COPY server.py .
