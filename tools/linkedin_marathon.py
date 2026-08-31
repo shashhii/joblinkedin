@@ -504,8 +504,11 @@ def main() -> int:
                 write_status(applied_count, target, "target reached")
                 break
 
-            # Hourly refresh: delete old IDs, extract a fresh list.
-            if results_age_seconds() >= REFRESH_SECONDS:
+            # Hourly refresh: delete old IDs, extract a fresh list. Only when
+            # a list EXISTS — if the list is missing, the pool-exhausted branch
+            # below handles it (with throttle backoff), so we don't bypass the
+            # backoff by re-searching every loop.
+            if RESULTS_FILE.exists() and results_age_seconds() >= REFRESH_SECONDS:
                 do_refresh(headed, "hourly")
 
             applied = load_ids(APPLIED_FILE)
