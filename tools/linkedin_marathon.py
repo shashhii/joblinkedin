@@ -77,6 +77,14 @@ DAILY_COUNT_FILE = HERE / ".daily_count.txt"
 # session to be restored from R2 before retrying.
 SESSION_EXPIRED_COOLDOWN = 1800
 
+# LinkedIn throttles datacenter IPs: when a search comes back with 0 jobs the
+# IP is rate-limited, and retrying every 15 min only EXTENDS the throttle.
+# Back off exponentially (2h -> 4h -> 8h -> 12h cap) so the IP can cool down.
+# The counter resets as soon as a search finds jobs again.
+THROTTLE_BACKOFF_FILE = HERE / ".throttle_backoff.txt"
+THROTTLE_BACKOFF_MIN = 2 * 3600     # first backoff: 2 hours
+THROTTLE_BACKOFF_MAX = 12 * 3600    # cap: 12 hours
+
 # Dev-specific role keywords (same curated set as the autopilot).
 RELEVANT_KEYWORDS = [
     "software engineer", "software developer", "software development",
@@ -389,6 +397,39 @@ def fresh_search(headed: bool) -> bool:
     return n > 0
 
 
+def throttle_backoff() -> None:
+    """Sleep an exponentially growing backoff after a 0-job (throttled) search.
+
+    LinkedIn rate-limits datacenter IPs; hammering it every 15 min only
+    extends the throttle. Back off 2h -> 4h -> 8h -> 12h (cap) until a
+    search finds jobs again.
+    """
+    streak = 0
+    try:
+        if THROTTLE_BACKOFF_FILE.exists():
+            streak = int(THROTTLE_BACKOFF_FILE.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        streak = 0
+    streak += 1
+    secs = min(THROTTLE_BACKOFF_MIN * (2 ** (streak - 1)), THROTTLE_BACKOFF_MAX)
+    try:
+        THROTTLE_BACKOFF_FILE.write_text(str(streak), encoding="utf-8")
+    except OSError:
+        pass
+    log(f"LinkedIn appears to be throttling this IP (0 jobs); "
+        f"backing off {secs // 3600}h {secs % 3600 // 60}min (streak {streak})")
+    time.sleep(secs)
+
+
+def throttle_backoff_reset() -> None:
+    """Clear the throttle streak once a search finds jobs again."""
+    try:
+        if THROTTLE_BACKOFF_FILE.exists():
+            THROTTLE_BACKOFF_FILE.unlink()
+    except OSError:
+        pass
+
+
 def run_batch(job_urls: list[str], resume: Path, headed: bool) -> dict[str, str]:
     """One headless browser session applies to all jobs in the batch."""
     BATCH_URLS_FILE.write_text("\n".join(job_urls), encoding="utf-8")
@@ -471,10 +512,29 @@ def main() -> int:
             tried = load_ids(TRIED_FILE)
             candidates = parse_candidates(applied, tried)
             log(f"{len(candidates)} fresh candidates (applied so far: {len(applied)}/{target})")
+            if candidates:
+                # The search found usable jobs -> the IP is no longer
+                # throttled; clear the backoff streak.
+                throttle_backoff_reset()
 
             if not candidates:
-                # Pool exhausted: brief cooldown, then early refresh with a
-                # brand-new job list (hourly cadence stays the max list age).
+                # Pool exhausted. If the job list is missing/empty, the search
+                # found 0 jobs -> LinkedIn is throttling this IP. Back off for
+                # hours (exponential) instead of hammering every 15 min, which
+                # only extends the throttle.
+                list_empty = not RESULTS_FILE.exists() or not any(
+                    x.strip() for x in RESULTS_FILE.read_text(encoding="utf-8").splitlines()
+                )
+                if list_empty:
+                    write_status(len(applied), target,
+                                 "LinkedIn throttling this IP; long backoff active")
+                    throttle_backoff()
+                    if count_applied() >= target:
+                        continue
+                    do_refresh(headed, "throttle backoff")
+                    continue
+                # List exists but every job is applied/tried: brief cooldown,
+                # then early refresh with a brand-new job list.
                 write_status(len(applied), target,
                              "pool exhausted; early refresh after 15 min cooldown")
                 log(f"pool exhausted; cooling down {EXHAUSTED_COOLDOWN // 60} min "
