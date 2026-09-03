@@ -522,6 +522,8 @@ def _start_tailscale() -> None:
     try:
         state_dir = "/var/lib/tailscale"
         os.makedirs(state_dir, exist_ok=True)
+        log_path = f"{state_dir}/tailscaled.log"
+        logf = open(log_path, "ab", buffering=0)
         proc = subprocess.Popen(
             [
                 "tailscaled",
@@ -530,17 +532,43 @@ def _start_tailscale() -> None:
                 "--socks5-port=1053",
                 "--outbound-http-proxy-listen=0",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=logf,
+            stderr=logf,
             start_new_session=True,
         )
-        _log(f"tailscale: tailscaled started (pid {proc.pid})")
+        _log(f"tailscale: tailscaled started (pid {proc.pid}), log -> {log_path}")
+        # Wait up to 60s for the daemon to be reachable.
+        daemon_up = False
+        for _ in range(30):
+            if proc.poll() is not None:
+                _log(f"tailscale: tailscaled exited early (code {proc.returncode}) — see {log_path}")
+                return
+            try:
+                st = subprocess.run(
+                    ["tailscale", "status", "--json"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if st.returncode == 0:
+                    daemon_up = True
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        if not daemon_up:
+            _log(f"tailscale: daemon not reachable after 60s — see {log_path}")
+            return
+        # Authenticate + join the tailnet (starting tailscaled alone does NOT join).
+        up = subprocess.run(
+            ["tailscale", "up", f"--auth-key={auth_key}"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if up.returncode != 0:
+            _log(f"tailscale: 'tailscale up' failed: {up.stderr[:300]}")
+            return
+        _log("tailscale: joined tailnet, waiting for online...")
         # Wait up to 60s for the node to come online.
         online = False
         for _ in range(30):
-            if proc.poll() is not None:
-                _log("tailscale: tailscaled exited early — giving up")
-                return
             try:
                 st = subprocess.run(
                     ["tailscale", "status", "--json"],
@@ -607,6 +635,15 @@ def ts_diag():
             out["error"] = f"tailscale status failed: {st.stderr[:200]}"
     except Exception as exc:
         out["error"] = f"{exc.__class__.__name__}: {exc}"
+    # Surface the tailscaled daemon log (last lines) for debugging.
+    try:
+        with open("/var/lib/tailscale/tailscaled.log", "rb") as lf:
+            lf.seek(0, 2)
+            size = lf.tell()
+            lf.seek(max(0, size - 1500))
+            out["daemon_log_tail"] = lf.read().decode("utf-8", "replace")[-1500:]
+    except Exception:
+        out["daemon_log_tail"] = "(no log file yet)"
     # If PROXY_URL points at a socks5:// tailnet IP, test TCP reachability.
     purl = os.environ.get("PROXY_URL", "").strip()
     if purl.startswith("socks5://"):
