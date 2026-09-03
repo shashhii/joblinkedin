@@ -630,10 +630,21 @@ def ts_diag():
             out["self_ip"] = (data.get("Self", {}).get("TailscaleIPs") or ["?"])[0]
             out["online"] = data.get("Self", {}).get("Online", False)
             out["peers"] = peers
+            out["raw_status"] = st.stdout[:2000]
         else:
             out["error"] = f"tailscale status failed: {st.stderr[:200]}"
+            out["raw_status"] = st.stderr[:2000]
     except Exception as exc:
         out["error"] = f"{exc.__class__.__name__}: {exc}"
+    # Human-readable status (shows peer list + exit-node marker).
+    try:
+        st2 = subprocess.run(
+            ["tailscale", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out["status_text"] = (st2.stdout + st2.stderr)[:2000]
+    except Exception as exc:
+        out["status_text"] = f"{exc.__class__.__name__}: {exc}"
     # Surface the tailscaled daemon log (last lines) for debugging.
     try:
         with open("/var/lib/tailscale/tailscaled.log", "rb") as lf:
