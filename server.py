@@ -286,10 +286,15 @@ def probe():
             _proxy = {}
             _purl = os.environ.get("PROXY_URL", "").strip()
             if _purl:
-                _server = _purl.replace("http://", "").replace("https://", "")
-                _proxy = {"proxy": {"server": f"http://{_server}"}}
-                if "@" in _server:
-                    _auth, _h = _server.split("@", 1)
+                # Preserve the scheme (http/https/socks5) so Webshare's
+                # socks5:// endpoint works.
+                if "://" in _purl:
+                    _scheme, _rest = _purl.split("://", 1)
+                else:
+                    _scheme, _rest = "http", _purl
+                _proxy = {"proxy": {"server": f"{_scheme}://{_rest}"}}
+                if "@" in _rest:
+                    _auth, _h = _rest.split("@", 1)
                     if ":" in _auth:
                         _u, _p = _auth.split(":", 1)
                         _proxy["proxy"]["username"] = _u

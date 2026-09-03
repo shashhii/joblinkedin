@@ -47,16 +47,20 @@ except Exception:
 def _proxy_kwargs() -> dict:
     """Residential proxy from env (LinkedIn blocks datacenter IPs).
 
-    Set PROXY_URL (e.g. http://user:pass@host:port) on Render to route the
-    browser through a residential IP. Empty -> no proxy.
+    Set PROXY_URL on Render to route the browser through a residential IP.
+    Supports http://, https:// and socks5:// schemes (the scheme is
+    preserved, so Webshare's socks5:// endpoint works). Empty -> no proxy.
     """
     url = os.environ.get("PROXY_URL", "").strip()
     if not url:
         return {}
-    server = url.replace("http://", "").replace("https://", "")
-    pw: dict = {"server": f"http://{server}"}
-    if "@" in server:
-        auth, _host = server.split("@", 1)
+    if "://" in url:
+        scheme, rest = url.split("://", 1)
+    else:
+        scheme, rest = "http", url
+    pw: dict = {"server": f"{scheme}://{rest}"}
+    if "@" in rest:
+        auth, _host = rest.split("@", 1)
         if ":" in auth:
             user, pwd = auth.split(":", 1)
             pw["username"] = user
