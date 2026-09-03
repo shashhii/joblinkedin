@@ -35,6 +35,15 @@ RUN pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt \
     || { echo "==> pip attempt 2 failed, retrying in 10s..."; sleep 10; \
          pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt; }
 
+# Tailscale: lets the container reach the user's Android phone (which runs a
+# SOCKS5 proxy on its cellular connection) over a private tailnet. The phone's
+# cellular IP is residential, so LinkedIn does not block it the way it blocks
+# datacenter IPs. server.py starts tailscaled in userspace mode at boot when
+# TAILSCALE_AUTH_KEY is set.
+RUN (curl -fsSL https://tailscale.com/install.sh | sh) \
+    || { echo "==> tailscale install attempt 1 failed, retrying in 10s..."; sleep 10; \
+         curl -fsSL https://tailscale.com/install.sh | sh; }
+
 # Copy the application (server.py + tools/).
 COPY server.py .
 COPY tools/ tools/

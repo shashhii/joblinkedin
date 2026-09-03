@@ -498,6 +498,131 @@ def index():
         return f"<h2>LinkedIn Marathon</h2><p>error: {exc}</p>", 200
 
 
+def _start_tailscale() -> None:
+    """Join the tailnet at boot (userspace mode — Render containers have no
+    NET_ADMIN, so we cannot use a real TUN device).
+
+    The phone's residential IP is used as a Tailscale EXIT NODE:
+      * TAILSCALE_AUTH_KEY  — reusable key from the admin console; joins the
+        tailnet on every boot (Render's filesystem is ephemeral).
+      * TAILSCALE_EXIT_NODE — the phone's Tailscale IP. Once set, traffic that
+        goes through the local SOCKS5 proxy (127.0.0.1:1053) exits via the
+        phone's cellular connection. The browser is pointed at
+        PROXY_URL=socks5://127.0.0.1:1053.
+
+    In userspace mode only the browser's traffic (via 1053) is routed through
+    the phone; R2 / Gemini / other traffic still goes direct, so a phone
+    dropout does not take down the whole service.
+    """
+    auth_key = os.environ.get("TAILSCALE_AUTH_KEY", "").strip()
+    if not auth_key:
+        _log("tailscale: TAILSCALE_AUTH_KEY not set — skipping (no phone proxy)")
+        return
+    exit_node = os.environ.get("TAILSCALE_EXIT_NODE", "").strip()
+    try:
+        state_dir = "/var/lib/tailscale"
+        os.makedirs(state_dir, exist_ok=True)
+        proc = subprocess.Popen(
+            [
+                "tailscaled",
+                "--tun=userspace-networking",
+                f"--state={state_dir}/tailscaled.state",
+                "--socks5-port=1053",
+                "--outbound-http-proxy-listen=0",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _log(f"tailscale: tailscaled started (pid {proc.pid})")
+        # Wait up to 60s for the node to come online.
+        online = False
+        for _ in range(30):
+            if proc.poll() is not None:
+                _log("tailscale: tailscaled exited early — giving up")
+                return
+            try:
+                st = subprocess.run(
+                    ["tailscale", "status", "--json"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if st.returncode == 0 and '"Online":true' in st.stdout:
+                    import json as _json
+                    data = _json.loads(st.stdout)
+                    self_ip = data.get("Self", {}).get("TailscaleIPs", ["?"])[0]
+                    _log(f"tailscale: ONLINE, this node = {self_ip}")
+                    online = True
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        if not online:
+            _log("tailscale: still not online after 60s — will keep retrying in background")
+            return
+        # Route browser traffic (via the local SOCKS5 proxy) through the phone.
+        if exit_node:
+            for attempt in range(5):
+                try:
+                    es = subprocess.run(
+                        ["tailscale", "set", f"--exit-node={exit_node}"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if es.returncode == 0:
+                        _log(f"tailscale: exit node set to {exit_node} (browser exits via phone)")
+                        return
+                    _log(f"tailscale: set exit node attempt {attempt + 1} failed: {es.stderr[:200]}")
+                except Exception as exc:
+                    _log(f"tailscale: set exit node error: {exc}")
+                time.sleep(3)
+            _log("tailscale: could not set exit node — browser will use direct connection")
+    except Exception as exc:
+        _log(f"tailscale: failed to start: {exc}")
+
+
+@app.get("/ts")
+def ts_diag():
+    """Tailscale diagnostic: is the tailnet up, and can we reach the phone's
+    SOCKS5 port?"""
+    out: dict = {"tailscale_auth_key_set": bool(os.environ.get("TAILSCALE_AUTH_KEY", "").strip())}
+    try:
+        st = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if st.returncode == 0:
+            import json as _json
+            data = _json.loads(st.stdout)
+            peers = []
+            for ip, p in data.get("Peers", {}).items():
+                peers.append({
+                    "ip": ip,
+                    "os": p.get("OS", ""),
+                    "online": p.get("Online", False),
+                    "name": (p.get("HostName") or "")[:40],
+                })
+            out["self_ip"] = (data.get("Self", {}).get("TailscaleIPs") or ["?"])[0]
+            out["online"] = data.get("Self", {}).get("Online", False)
+            out["peers"] = peers
+        else:
+            out["error"] = f"tailscale status failed: {st.stderr[:200]}"
+    except Exception as exc:
+        out["error"] = f"{exc.__class__.__name__}: {exc}"
+    # If PROXY_URL points at a socks5:// tailnet IP, test TCP reachability.
+    purl = os.environ.get("PROXY_URL", "").strip()
+    if purl.startswith("socks5://"):
+        try:
+            hostport = purl.split("://", 1)[1].split("@")[-1]
+            host, port = hostport.rsplit(":", 1)
+            import socket as _sock
+            s = _sock.create_connection((host, int(port)), timeout=10)
+            s.close()
+            out["phone_socks_reachable"] = True
+        except Exception as exc:
+            out["phone_socks_reachable"] = False
+            out["phone_socks_error"] = f"{exc.__class__.__name__}: {exc}"
+    return jsonify(out)
+
+
 def _shutdown(signum, frame):  # noqa: ARG001
     _log(f"received signal {signum}; stopping marathon")
     if _proc and _proc.poll() is None:
@@ -512,6 +637,7 @@ def _shutdown(signum, frame):  # noqa: ARG001
 def main() -> int:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
+    _start_tailscale()
     _spawn_marathon()
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
