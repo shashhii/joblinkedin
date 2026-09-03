@@ -670,6 +670,37 @@ def ts_diag():
     return jsonify(out)
 
 
+@app.get("/ts/set-exit")
+def ts_set_exit():
+    """On-demand: set the exit node (from TAILSCALE_EXIT_NODE) and report the
+    result + current status. Lets us fix a failed boot-time set without a
+    full redeploy."""
+    out: dict = {}
+    exit_node = os.environ.get("TAILSCALE_EXIT_NODE", "").strip()
+    out["exit_node_env"] = exit_node or "(not set)"
+    if not exit_node:
+        return jsonify(out)
+    try:
+        es = subprocess.run(
+            ["tailscale", "set", f"--exit-node={exit_node}"],
+            capture_output=True, text=True, timeout=60,
+        )
+        out["set_rc"] = es.returncode
+        out["set_stdout"] = es.stdout[:500]
+        out["set_stderr"] = es.stderr[:500]
+    except Exception as exc:
+        out["set_error"] = f"{exc.__class__.__name__}: {exc}"
+    try:
+        st = subprocess.run(
+            ["tailscale", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        out["status_text"] = (st.stdout + st.stderr)[:2000]
+    except Exception as exc:
+        out["status_error"] = f"{exc.__class__.__name__}: {exc}"
+    return jsonify(out)
+
+
 def _shutdown(signum, frame):  # noqa: ARG001
     _log(f"received signal {signum}; stopping marathon")
     if _proc and _proc.poll() is None:
