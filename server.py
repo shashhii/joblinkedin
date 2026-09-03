@@ -529,7 +529,7 @@ def _start_tailscale() -> None:
                 "tailscaled",
                 "--tun=userspace-networking",
                 f"--state={state_dir}/tailscaled.state",
-                "--socks5-port=1053",
+                "--socks5-server=127.0.0.1:1053",
                 "--outbound-http-proxy-listen=0",
             ],
             stdout=logf,
