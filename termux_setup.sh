@@ -11,20 +11,19 @@ echo "=================================================="
 
 # 1. Update Termux base packages
 echo "[1/4] Updating Termux packages..."
-pkg update -y && pkg upgrade -y
+pkg update -y
 
-# 2. Install Git, Python, and required build tools
+# 2. Install Git, Python, pre-compiled C-libraries, and build tools
 echo "[2/4] Installing Git, Python, and system dependencies..."
-pkg install -y git python nodejs clang make libffi libxml2 libxslt libjpeg-turbo freetype
+pkg install -y git python python-pip nodejs clang make libffi libxml2 libxslt libjpeg-turbo freetype python-cryptography python-pillow
 
-# 3. Upgrade pip and install Python dependencies
-echo "[3/4] Installing Python libraries (ReportLab, Patchright, Boto3)..."
-pip install --upgrade pip
-pip install reportlab requests python-dotenv boto3 patchright
+# 3. Install Python libraries using --break-system-packages (standard for Termux)
+echo "[3/4] Installing Python libraries (ReportLab, Boto3, Requests, Dotenv, Patchright)..."
+pip install --break-system-packages reportlab requests python-dotenv boto3 patchright
 
 # 4. Make execution scripts executable
 echo "[4/4] Configuring execution permissions..."
-chmod +x run_termux.sh
+chmod +x run_termux.sh termux_setup.sh
 
 # 5. Acquire Termux wake-lock
 if command -v termux-wake-lock >/dev/null 2>&1; then
