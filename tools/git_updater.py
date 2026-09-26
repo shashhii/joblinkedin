@@ -68,10 +68,11 @@ def check_and_apply_updates(auto_install_deps: bool = True) -> bool:
     # Check which files changed before pulling
     rc, diff_files = run_cmd(["git", "diff", "--name-only", "HEAD", "@{u}"])
 
-    # Pull latest commits
+    # Pull latest commits with self-healing reset on conflict
     rc, pull_out = run_cmd(["git", "pull", "--ff-only"])
     if rc != 0:
-        # Try standard merge pull if fast-forward fails
+        log(f"Fast-forward merge conflict, self-healing working tree...")
+        run_cmd(["git", "reset", "--hard", "@{u}"])
         rc, pull_out = run_cmd(["git", "pull", "--no-rebase"])
         if rc != 0:
             log(f"Git pull error: {pull_out}")
