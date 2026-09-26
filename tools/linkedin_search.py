@@ -460,7 +460,11 @@ def main() -> int:
                         print(f"[search] goto: {url[:90]}", flush=True)
                         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                         print(f"[search] loaded: {page.url[:90]}", flush=True)
-                        time.sleep(3)
+                        if "authwall" in page.url or "/login" in page.url or "checkpoint" in page.url:
+                            print("[search] LinkedIn redirected to login/authwall — valid session required", flush=True)
+                            consecutive_failures += 1
+                            continue
+                        time.sleep(2)
                         scroll_to_load(page, rounds=3)
                         jobs = extract_jobs(page)
                         consecutive_failures = 0

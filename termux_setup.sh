@@ -21,9 +21,10 @@ pkg install -y git python python-pip nodejs clang make libffi libxml2 libxslt li
 echo "[3/4] Installing Python libraries (ReportLab, Boto3, Requests, Dotenv, Patchright)..."
 pip install --break-system-packages reportlab requests python-dotenv boto3 patchright
 
-# 4. Make execution scripts executable
-echo "[4/4] Configuring execution permissions..."
+# 4. Make execution scripts executable & initialize cloud sync
+echo "[4/4] Initializing Cloudflare R2 session & AI credentials..."
 chmod +x run_termux.sh termux_setup.sh
+python tools/setup_keys.py
 
 # 5. Acquire Termux wake-lock
 if command -v termux-wake-lock >/dev/null 2>&1; then
