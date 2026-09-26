@@ -32,6 +32,17 @@ import sys
 import time
 from pathlib import Path
 
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Optional AI workflow monitor (Gemini/Grok). Degrades gracefully when no
 # API key is configured in tools/.ai.env.
 try:
@@ -64,14 +75,13 @@ _BUNDLED_RESUME = HERE / "resume" / "cv-pragma-edge-trainee.pdf"
 _CAREEROPS_RESUME = HERE.parent / "career-ops" / "output" / "cv-pragma-edge-trainee.pdf"
 DEFAULT_RESUME = _BUNDLED_RESUME if _BUNDLED_RESUME.exists() else _CAREEROPS_RESUME
 
-TARGET_DEFAULT = 100
-REFRESH_SECONDS = 3600          # delete + re-extract the job list every hour
-EXHAUSTED_COOLDOWN = 900        # pool empty -> early refresh after 15 min cooldown
-BATCH_SIZE = 8                  # jobs per browser session (smaller = less rate-limiting)
-INTER_BATCH_PAUSE = 120         # seconds between batches (anti-rate-limit)
-# Account safety: hard cap on applications per local day. Override with the
-# DAILY_CAP env var on Render. 25/day is a conservative, low-risk volume.
-DAILY_CAP = int(os.environ.get("DAILY_CAP", "25"))
+TARGET_DEFAULT = int(os.environ.get("TARGET", "1000"))
+REFRESH_SECONDS = 1800          # delete + re-extract the job list every 30 mins
+EXHAUSTED_COOLDOWN = 15         # pool empty -> immediately refresh with new keywords
+BATCH_SIZE = 10                 # 10 jobs per batch for faster throughput
+INTER_BATCH_PAUSE = 10          # 10s pause between batches
+# High speed continuous applications: daily cap raised to 200
+DAILY_CAP = int(os.environ.get("DAILY_CAP", "200"))
 DAILY_COUNT_FILE = HERE / ".daily_count.txt"
 # When LinkedIn bounces us to the authwall, wait this long for a fresh
 # session to be restored from R2 before retrying.
@@ -355,6 +365,27 @@ def do_refresh(headed: bool, reason: str) -> bool:
     return fresh_search(headed)
 
 
+def _kill_process_tree(proc) -> None:
+    """Kill a process and ALL its children (cross-platform).
+
+    On Windows, ``proc.kill()`` only kills the direct child, leaving
+    orphaned Chromium processes that keep the stdout/stderr pipes open —
+    which makes ``communicate()`` block forever. ``taskkill /F /T`` kills
+    the whole tree. On POSIX we use ``os.killpg`` (needs start_new_session).
+    """
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=20)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def fresh_search(headed: bool) -> bool:
     """Delete the old list and extract a fresh one (new job IDs)."""
     log("extracting fresh jobs from LinkedIn...")
@@ -370,16 +401,27 @@ def fresh_search(headed: bool) -> bool:
         proc = subprocess.Popen(
             cmd, cwd=str(HERE.parent),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            text=True, encoding="utf-8", errors="replace",
+            start_new_session=True,
         )
         try:
             proc.communicate(timeout=1800)
         except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, OSError, AttributeError):
                 proc.kill()
-            proc.wait()
+            except Exception:
+                pass
+            try:
+                proc.communicate(timeout=10)
+            except Exception:
+                try:
+                    if proc.stdout:
+                        proc.stdout.close()
+                    if proc.stderr:
+                        proc.stderr.close()
+                except Exception:
+                    pass
             log("search timed out (killed process tree)")
             timed_out = True
     except Exception as exc:
@@ -443,15 +485,39 @@ def run_batch(job_urls: list[str], resume: Path, headed: bool) -> dict[str, str]
     if headed:
         cmd.append("--headed")
     try:
-        proc = subprocess.run(cmd, cwd=str(HERE.parent),
-                              timeout=180 + 100 * len(job_urls),
-                              capture_output=True, text=True)
-        if proc.stdout:
-            for line in proc.stdout.splitlines():
+        proc = subprocess.Popen(cmd, cwd=str(HERE.parent),
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace")
+        try:
+            out, _ = proc.communicate(timeout=300 + 300 * len(job_urls))
+        except subprocess.TimeoutExpired:
+            # Kill the WHOLE tree (Python + Chromium + node).
+            _kill_process_tree(proc)
+            # Also kill the direct child in case taskkill missed it
+            # (e.g. the Python apply process is stuck in evaluate() talking
+            # to a dead browser — it won't exit on its own).
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                out, _ = proc.communicate(timeout=10)
+            except Exception:
+                # If communicate still hangs, close pipes manually
+                out = ""
+                try:
+                    if proc.stdout:
+                        proc.stdout.close()
+                except Exception:
+                    pass
+            log("batch timed out (killed process tree)")
+        if out:
+            for line in out.splitlines():
                 if line.startswith("[batch]"):
                     log(line)
-    except subprocess.TimeoutExpired:
-        log("batch timed out")
+    except Exception as exc:
+        log(f"batch failed: {exc}")
     results: dict[str, str] = {}
     if BATCH_RESULTS_FILE.exists():
         for line in BATCH_RESULTS_FILE.read_text(encoding="utf-8").splitlines():
@@ -504,12 +570,9 @@ def main() -> int:
                 write_status(applied_count, target, "target reached")
                 break
 
-            # Hourly refresh: delete old IDs, extract a fresh list. Only when
-            # a list EXISTS — if the list is missing, the pool-exhausted branch
-            # below handles it (with throttle backoff), so we don't bypass the
-            # backoff by re-searching every loop.
-            if RESULTS_FILE.exists() and results_age_seconds() >= REFRESH_SECONDS:
-                do_refresh(headed, "hourly")
+            # Perform initial search if results file does not exist, or hourly refresh if outdated.
+            if not RESULTS_FILE.exists() or results_age_seconds() >= REFRESH_SECONDS:
+                do_refresh(headed, "initial search" if not RESULTS_FILE.exists() else "hourly")
 
             applied = load_ids(APPLIED_FILE)
             tried = load_ids(TRIED_FILE)

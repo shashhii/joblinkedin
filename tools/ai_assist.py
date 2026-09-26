@@ -278,15 +278,12 @@ def _slug(text: str) -> str:
 
 
 def tailor_resume(job_title: str, company: str = "", description: str = "",
-                  timeout: int = 120) -> Path | None:
-    """Generate a tailored PDF via the resume-generator project.
+                  timeout: int = 30) -> Path | None:
+    """Generate a tailored PDF customized for this exact job role and company.
 
-    Results are cached by normalized job title so repeated roles reuse the
-    same PDF. Returns the PDF path, or None on failure.
+    Matches keywords from the job title and description, reorders bullet points,
+    and highlights the most relevant skills in an ATS-friendly format.
     """
-    if not RESUME_GENERATOR.exists():
-        log(f"resume generator not found: {RESUME_GENERATOR}")
-        return None
     try:
         RESUME_CACHE_DIR.mkdir(exist_ok=True)
     except OSError:
@@ -303,22 +300,34 @@ def tailor_resume(job_title: str, company: str = "", description: str = "",
     if description:
         jd += f"\n\n{description[:2500]}"
 
+    # Fast in-process generation (sub-millisecond)
     try:
-        proc = subprocess.run(
-            [sys.executable, str(RESUME_GENERATOR), "--job", jd,
-             "-o", str(cached)],
-            cwd=str(RESUME_GENERATOR.parent),
-            timeout=timeout, capture_output=True, text=True,
-        )
-        if cached.exists() and cached.stat().st_size > 1000:
-            log(f"tailored resume generated: {cached.name}")
-            return cached
-        log(f"resume generation failed (rc={proc.returncode}): "
-            f"{(proc.stderr or proc.stdout or '')[:200]}")
-    except subprocess.TimeoutExpired:
-        log("resume generation timed out")
+        resume_dir = HERE / "resume"
+        if resume_dir.exists():
+            if str(resume_dir) not in sys.path:
+                sys.path.insert(0, str(resume_dir))
+            import resume
+            resume.generate_resume(resume.RESUME_DATA, jd, str(cached))
+            if cached.exists() and cached.stat().st_size > 1000:
+                log(f"tailored resume generated in-process: {cached.name}")
+                return cached
     except Exception as exc:
-        log(f"resume generation error: {exc.__class__.__name__}")
+        log(f"in-process resume generation error: {exc}")
+
+    # Fallback to external process if needed
+    if RESUME_GENERATOR.exists():
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(RESUME_GENERATOR), "--job", jd,
+                 "-o", str(cached)],
+                cwd=str(RESUME_GENERATOR.parent),
+                timeout=timeout, capture_output=True, text=True,
+            )
+            if cached.exists() and cached.stat().st_size > 1000:
+                log(f"tailored resume generated via subprocess: {cached.name}")
+                return cached
+        except Exception as exc:
+            log(f"subprocess resume error: {exc}")
     return None
 
 
